@@ -2,7 +2,7 @@
  * PubMed MCP Server - Cloudflare Pages Edition
  * Migrated from Google Cloud Run (Python/FastMCP) to Cloudflare Pages (TypeScript)
  *
- * Transport: HTTP (Server-Sent Events) for Claude.ai compatibility
+ * Transport: HTTP (modern MCP protocol) for Claude.ai compatibility
  * Endpoint: /mcp
  *
  * Features:
@@ -1002,51 +1002,30 @@ async function handleMCP(
 }
 
 /**
- * Handle Server-Sent Events for Claude.ai integration
+ * Handle MCP HTTP requests (simple POST → JSON response)
+ * Modern HTTP transport - no SSE needed
  */
-async function handleSSE(
+async function handleMCPRequest(
   request: Request,
   env: Env,
   cache: Cache
 ): Promise<Response> {
-  const { readable, writable } = new TransformStream();
-  const writer = writable.getWriter();
-  const encoder = new TextEncoder();
+  try {
+    const body = await request.json() as MCPRequest;
+    const response = await handleMCP(body, env.NCBI_API_KEY, cache);
 
-  // Start processing in background
-  (async () => {
-    try {
-      const body = await request.json() as MCPRequest;
-      const response = await handleMCP(body, env.NCBI_API_KEY, cache);
-
-      const data = `data: ${JSON.stringify(response)}\n\n`;
-      await writer.write(encoder.encode(data));
-    } catch (error: any) {
-      const errorResponse = {
-        jsonrpc: "2.0",
-        id: null,
-        error: {
-          code: -32700,
-          message: "Parse error"
-        }
-      };
-      const data = `data: ${JSON.stringify(errorResponse)}\n\n`;
-      await writer.write(encoder.encode(data));
-    } finally {
-      await writer.close();
-    }
-  })();
-
-  return new Response(readable, {
-    headers: {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-      "Connection": "keep-alive",
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type"
-    }
-  });
+    return jsonResponse(response);
+  } catch (error: any) {
+    const errorResponse = {
+      jsonrpc: "2.0",
+      id: null,
+      error: {
+        code: -32700,
+        message: error.message || "Parse error"
+      }
+    };
+    return jsonResponse(errorResponse, 400);
+  }
 }
 
 /**
@@ -1084,19 +1063,22 @@ export const onRequest: PagesFunction<Env> = async (context) => {
     });
   }
 
-  // Route: /mcp endpoint
+  // Route: /mcp endpoint (HTTP transport)
   if (url.pathname === "/mcp") {
+    // POST: Handle MCP JSON-RPC requests
     if (request.method === "POST") {
-      return handleSSE(request, env, cache);
+      return handleMCPRequest(request, env, cache);
     }
 
+    // GET: Return server info (for discovery/testing)
     if (request.method === "GET") {
       return jsonResponse({
         name: "PubMed Research Tools",
         version: "1.0.0",
         description: "MCP server for PubMed/NCBI pharmaceutical research",
+        transport: "HTTP",
         endpoint: "/mcp",
-        transport: "Server-Sent Events (SSE)",
+        tools_count: TOOLS.length,
         tools: TOOLS.map(t => ({
           name: t.name,
           description: t.description
@@ -1111,6 +1093,7 @@ export const onRequest: PagesFunction<Env> = async (context) => {
       service: "PubMed MCP Server",
       status: "running",
       version: "1.0.0",
+      transport: "HTTP",
       endpoints: {
         mcp: "/mcp",
         health: "/health"

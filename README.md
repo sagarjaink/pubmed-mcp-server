@@ -31,7 +31,7 @@ A Model Context Protocol (MCP) server that provides Claude.ai with access to Pub
 
 ### Current (Cloudflare Pages)
 - **Runtime:** TypeScript on Cloudflare Workers
-- **Transport:** Server-Sent Events (SSE) for MCP protocol
+- **Transport:** HTTP (modern MCP protocol)
 - **Caching:** Cloudflare Cache API (1-hour TTL)
 - **Cost:** $0/month (Free tier: 100,000 requests/day)
 
@@ -52,7 +52,7 @@ A Model Context Protocol (MCP) server that provides Claude.ai with access to Pub
 
 2. **Connect to Claude.ai**:
    - URL: `https://your-project.pages.dev/mcp`
-   - Transport: Server-Sent Events (SSE)
+   - Transport: HTTP
 
 ### Local Development
 

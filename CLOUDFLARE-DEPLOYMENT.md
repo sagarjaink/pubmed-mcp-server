@@ -120,7 +120,7 @@ Expected response:
 4. Enter:
    - **Name:** `PubMed Research`
    - **URL:** `https://pubmed-mcp-server.pages.dev/mcp`
-   - **Transport:** `Server-Sent Events (SSE)`
+   - **Transport:** `HTTP`
 5. Click **"Save"**
 
 Claude will now have access to all 7 PubMed tools!
