@@ -1,0 +1,28 @@
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-t', 'gcr.io/$PROJECT_ID/pubmed-mcp-server:latest', '.']
+  
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/pubmed-mcp-server:latest']
+  
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'pubmed-mcp-server'
+      - '--image=gcr.io/$PROJECT_ID/pubmed-mcp-server:latest'
+      - '--region=us-central1'
+      - '--platform=managed'
+      - '--allow-unauthenticated'
+      - '--port=8080'
+      - '--memory=512Mi'
+      - '--set-env-vars=NCBI_API_KEY=${_NCBI_API_KEY}'
+
+substitutions:
+  _NCBI_API_KEY: 'placeholder'
+
+images:
+  - 'gcr.io/$PROJECT_ID/pubmed-mcp-server:latest'
+
+timeout: '1200s'
