@@ -1,0 +1,32 @@
+{
+  "name": "pubmed-mcp-server",
+  "version": "1.0.0",
+  "description": "PubMed MCP Server for pharmaceutical patent research - Cloudflare Pages Edition",
+  "main": "functions/_middleware.ts",
+  "scripts": {
+    "dev": "wrangler pages dev",
+    "build": "tsc --noEmit",
+    "deploy": "echo 'Use Cloudflare Dashboard for deployment. See CLOUDFLARE-DEPLOYMENT.md'",
+    "type-check": "tsc --noEmit"
+  },
+  "keywords": [
+    "pubmed",
+    "mcp",
+    "model-context-protocol",
+    "biomedical-research",
+    "pharmaceutical",
+    "cloudflare-pages",
+    "ncbi",
+    "e-utilities"
+  ],
+  "author": "sagarjaink",
+  "license": "MIT",
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20241127.0",
+    "typescript": "^5.3.3",
+    "wrangler": "^3.87.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
