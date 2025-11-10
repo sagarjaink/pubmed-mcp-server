@@ -12,8 +12,6 @@
  * - Optional NCBI_API_KEY support (10 req/s with key, 3 req/s without)
  */
 
-import { XMLParser } from 'fast-xml-parser';
-
 // =============================================================================
 // TYPES & INTERFACES
 // =============================================================================
@@ -75,42 +73,49 @@ const MAX_RETRIES = 3;
 const CACHE_TTL = 3600; // 1 hour in seconds
 
 // =============================================================================
-// XML PARSING UTILITIES
+// XML PARSING UTILITIES (inline - no dependencies)
 // =============================================================================
 
 /**
- * Parse ESearch XML response using fast-xml-parser
+ * Simple XML tag extractor using regex
+ */
+function getXMLTagContent(xml: string, tagName: string): string {
+  const regex = new RegExp(`<${tagName}[^>]*>([\\s\\S]*?)<\\/${tagName}>`, 'i');
+  const match = xml.match(regex);
+  return match ? match[1].trim() : '';
+}
+
+/**
+ * Get all occurrences of a tag
+ */
+function getAllXMLTags(xml: string, tagName: string): string[] {
+  const regex = new RegExp(`<${tagName}[^>]*>([\\s\\S]*?)<\\/${tagName}>`, 'gi');
+  const matches: string[] = [];
+  let match;
+  while ((match = regex.exec(xml)) !== null) {
+    matches.push(match[1].trim());
+  }
+  return matches;
+}
+
+/**
+ * Parse ESearch XML response using simple regex parsing
  * Bug fixes applied:
  * - #1: Null safety on all element accesses
- * - Fixed: Use fast-xml-parser (DOMParser not available in Cloudflare Workers)
+ * - Fixed: Inline parsing (no external dependencies for Cloudflare Pages)
  */
 function parseESearchXML(xmlText: string): SearchResult {
   try {
-    const parser = new XMLParser({
-      ignoreAttributes: true,
-      parseTagValue: true
-    });
-    const result = parser.parse(xmlText);
-
-    // Navigate to eSearchResult
-    const searchResult = result.eSearchResult || {};
-
     // Extract count
-    const count = parseInt(searchResult.Count || '0', 10);
+    const countStr = getXMLTagContent(xmlText, 'Count');
+    const count = countStr ? parseInt(countStr, 10) : 0;
 
-    // Extract PMIDs (handle both array and single value)
-    let pmids: string[] = [];
-    if (searchResult.IdList && searchResult.IdList.Id) {
-      const ids = searchResult.IdList.Id;
-      if (Array.isArray(ids)) {
-        pmids = ids.map(id => String(id));
-      } else {
-        pmids = [String(ids)];
-      }
-    }
+    // Extract PMIDs from IdList
+    const idListSection = getXMLTagContent(xmlText, 'IdList');
+    const pmids = getAllXMLTags(idListSection, 'Id');
 
     // Extract query translation
-    const query_translation = searchResult.QueryTranslation || "";
+    const query_translation = getXMLTagContent(xmlText, 'QueryTranslation');
 
     return { count, pmids, query_translation };
   } catch (error) {
@@ -120,96 +125,72 @@ function parseESearchXML(xmlText: string): SearchResult {
 }
 
 /**
- * Parse EFetch XML response for PubmedArticle elements using fast-xml-parser
+ * Parse EFetch XML response using simple regex parsing
  * Bug fixes applied:
  * - #1: Null safety on all element accesses
  * - #2: Abstract concatenation with space separator
  * - #3: Author name formatting with conditional logic
  * - #4: Publication date edge cases
- * - Fixed: Use fast-xml-parser (DOMParser not available in Cloudflare Workers)
+ * - Fixed: Inline parsing (no external dependencies for Cloudflare Pages)
  */
 function parseEFetchXML(xmlText: string): Article[] {
   const articles: Article[] = [];
 
   try {
-    const parser = new XMLParser({
-      ignoreAttributes: false,
-      attributeNamePrefix: "@_",
-      parseTagValue: true,
-      isArray: (tagName) => {
-        // These tags can appear multiple times
-        return ['PubmedArticle', 'Author', 'AbstractText', 'ArticleId'].includes(tagName);
-      }
-    });
-    const result = parser.parse(xmlText);
+    // Get all PubmedArticle blocks
+    const articleBlocks = getAllXMLTags(xmlText, 'PubmedArticle');
 
-    // Get article array
-    let articleArray = result.PubmedArticleSet?.PubmedArticle || [];
-    if (!Array.isArray(articleArray)) {
-      articleArray = [articleArray];
-    }
-
-    for (const article of articleArray) {
+    for (const articleXML of articleBlocks) {
       try {
-        const medlineCitation = article.MedlineCitation || {};
-        const pubmedData = article.PubmedData || {};
-
         // PMID
-        const pmid = String(medlineCitation.PMID || "");
+        const pmid = getXMLTagContent(articleXML, 'PMID');
 
         // Title
-        const articleData = medlineCitation.Article || {};
-        const title = String(articleData.ArticleTitle || "");
+        const title = getXMLTagContent(articleXML, 'ArticleTitle');
 
         // Authors
         const authors: string[] = [];
-        const authorList = articleData.AuthorList?.Author || [];
-        const authorArray = Array.isArray(authorList) ? authorList : [authorList];
-
-        for (const author of authorArray) {
-          const lastname = author.LastName;
-          const forename = author.ForeName;
+        const authorBlocks = getAllXMLTags(articleXML, 'Author');
+        for (const authorXML of authorBlocks) {
+          const lastname = getXMLTagContent(authorXML, 'LastName');
+          const forename = getXMLTagContent(authorXML, 'ForeName');
 
           if (forename && lastname) {
             authors.push(`${forename} ${lastname}`);
           } else if (lastname) {
-            authors.push(String(lastname));
+            authors.push(lastname);
           }
         }
 
         // Journal
-        const journal = String(articleData.Journal?.Title || "");
+        const journalBlock = getXMLTagContent(articleXML, 'Journal');
+        const journal = getXMLTagContent(journalBlock, 'Title');
 
         // Publication date
-        const pubDate = articleData.Journal?.JournalIssue?.PubDate || {};
-        const year = String(pubDate.Year || "");
-        const month = String(pubDate.Month || "");
+        const pubDateBlock = getXMLTagContent(journalBlock, 'PubDate');
+        const year = getXMLTagContent(pubDateBlock, 'Year');
+        const month = getXMLTagContent(pubDateBlock, 'Month');
         const pub_date = month ? `${year}-${month}` : year;
 
         // Abstract
-        const abstractData = articleData.Abstract?.AbstractText || [];
-        const abstractArray = Array.isArray(abstractData) ? abstractData : [abstractData];
-        const abstractParts: string[] = [];
-
-        for (const part of abstractArray) {
-          if (typeof part === 'string') {
-            abstractParts.push(part);
-          } else if (part && part['#text']) {
-            abstractParts.push(String(part['#text']));
-          }
-        }
-        const abstract = abstractParts.join(" ");
+        const abstractTexts = getAllXMLTags(articleXML, 'AbstractText');
+        const abstract = abstractTexts.join(" ");
 
         // DOI
         let doi = "";
-        const articleIds = pubmedData.ArticleIdList?.ArticleId || [];
-        const articleIdArray = Array.isArray(articleIds) ? articleIds : [articleIds];
-
-        for (const id of articleIdArray) {
-          if (id['@_IdType'] === 'doi') {
-            doi = typeof id === 'string' ? id : String(id['#text'] || "");
+        const articleIdBlocks = getAllXMLTags(articleXML, 'ArticleId');
+        for (const idBlock of articleIdBlocks) {
+          // Check if this ArticleId has IdType="doi" attribute
+          if (idBlock.match(/IdType="doi"/i) || articleXML.match(new RegExp(`<ArticleId[^>]*IdType="doi"[^>]*>${idBlock}<\\/ArticleId>`, 'i'))) {
+            doi = idBlock;
             break;
           }
+        }
+
+        // Only if we actually extracted the DOI properly, let's try a different approach
+        const doiMatch = articleXML.match(/<ArticleId[^>]*IdType="doi"[^>]*>([^<]+)<\/ArticleId>/i);
+        if (doiMatch) {
+          doi = doiMatch[1];
         }
 
         articles.push({
@@ -234,44 +215,27 @@ function parseEFetchXML(xmlText: string): Article[] {
 }
 
 /**
- * Parse ELink XML response for citation links using fast-xml-parser
+ * Parse ELink XML response using simple regex parsing
  * Bug fixes applied:
  * - #1: Null safety on element accesses
- * - Fixed: Use fast-xml-parser (DOMParser not available in Cloudflare Workers)
+ * - Fixed: Inline parsing (no external dependencies for Cloudflare Pages)
  */
 function parseELinkXML(xmlText: string): string[] {
   try {
-    const parser = new XMLParser({
-      ignoreAttributes: true,
-      parseTagValue: true,
-      isArray: (tagName) => ['Link'].includes(tagName)
-    });
-    const result = parser.parse(xmlText);
-
     const citingPmids: string[] = [];
 
-    // Navigate to LinkSet
-    const linkSetList = result.eLinkResult?.LinkSet;
-    if (!linkSetList) return [];
+    // Extract LinkSetDb sections (which contain the citing articles)
+    const linkSetDbBlocks = getAllXMLTags(xmlText, 'LinkSetDb');
 
-    const linkSets = Array.isArray(linkSetList) ? linkSetList : [linkSetList];
+    for (const linkSetDbXML of linkSetDbBlocks) {
+      // Get all Link blocks within this LinkSetDb
+      const linkBlocks = getAllXMLTags(linkSetDbXML, 'Link');
 
-    for (const linkSet of linkSets) {
-      const linkSetDb = linkSet.LinkSetDb;
-      if (!linkSetDb) continue;
-
-      const linkSetDbArray = Array.isArray(linkSetDb) ? linkSetDb : [linkSetDb];
-
-      for (const db of linkSetDbArray) {
-        const links = db.Link;
-        if (!links) continue;
-
-        const linkArray = Array.isArray(links) ? links : [links];
-
-        for (const link of linkArray) {
-          if (link.Id) {
-            citingPmids.push(String(link.Id));
-          }
+      for (const linkXML of linkBlocks) {
+        // Extract the Id from each Link
+        const id = getXMLTagContent(linkXML, 'Id');
+        if (id) {
+          citingPmids.push(id);
         }
       }
     }
