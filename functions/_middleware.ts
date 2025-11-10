@@ -12,6 +12,8 @@
  * - Optional NCBI_API_KEY support (10 req/s with key, 3 req/s without)
  */
 
+import { XMLParser } from 'fast-xml-parser';
+
 // =============================================================================
 // TYPES & INTERFACES
 // =============================================================================
@@ -77,31 +79,38 @@ const CACHE_TTL = 3600; // 1 hour in seconds
 // =============================================================================
 
 /**
- * Parse ESearch XML response
+ * Parse ESearch XML response using fast-xml-parser
  * Bug fixes applied:
- * - #1: Null safety on all element.text accesses
- * - #13: Case-insensitive content-type check
+ * - #1: Null safety on all element accesses
+ * - Fixed: Use fast-xml-parser (DOMParser not available in Cloudflare Workers)
  */
 function parseESearchXML(xmlText: string): SearchResult {
   try {
-    const parser = new DOMParser();
-    const doc = parser.parseFromString(xmlText, "text/xml");
-
-    // Extract count (Bug #1: null safety)
-    const countElem = doc.querySelector("Count");
-    const count = countElem?.textContent ? parseInt(countElem.textContent, 10) : 0;
-
-    // Extract PMIDs (Bug #1: null safety)
-    const idElements = doc.querySelectorAll("Id");
-    const pmids: string[] = [];
-    idElements.forEach(elem => {
-      const text = elem.textContent;
-      if (text) pmids.push(text);
+    const parser = new XMLParser({
+      ignoreAttributes: true,
+      parseTagValue: true
     });
+    const result = parser.parse(xmlText);
 
-    // Extract query translation (Bug #1: null safety)
-    const transElem = doc.querySelector("QueryTranslation");
-    const query_translation = transElem?.textContent ?? "";
+    // Navigate to eSearchResult
+    const searchResult = result.eSearchResult || {};
+
+    // Extract count
+    const count = parseInt(searchResult.Count || '0', 10);
+
+    // Extract PMIDs (handle both array and single value)
+    let pmids: string[] = [];
+    if (searchResult.IdList && searchResult.IdList.Id) {
+      const ids = searchResult.IdList.Id;
+      if (Array.isArray(ids)) {
+        pmids = ids.map(id => String(id));
+      } else {
+        pmids = [String(ids)];
+      }
+    }
+
+    // Extract query translation
+    const query_translation = searchResult.QueryTranslation || "";
 
     return { count, pmids, query_translation };
   } catch (error) {
@@ -111,74 +120,97 @@ function parseESearchXML(xmlText: string): SearchResult {
 }
 
 /**
- * Parse EFetch XML response for PubmedArticle elements
+ * Parse EFetch XML response for PubmedArticle elements using fast-xml-parser
  * Bug fixes applied:
  * - #1: Null safety on all element accesses
  * - #2: Abstract concatenation with space separator
  * - #3: Author name formatting with conditional logic
  * - #4: Publication date edge cases
+ * - Fixed: Use fast-xml-parser (DOMParser not available in Cloudflare Workers)
  */
 function parseEFetchXML(xmlText: string): Article[] {
   const articles: Article[] = [];
 
   try {
-    const parser = new DOMParser();
-    const doc = parser.parseFromString(xmlText, "text/xml");
+    const parser = new XMLParser({
+      ignoreAttributes: false,
+      attributeNamePrefix: "@_",
+      parseTagValue: true,
+      isArray: (tagName) => {
+        // These tags can appear multiple times
+        return ['PubmedArticle', 'Author', 'AbstractText', 'ArticleId'].includes(tagName);
+      }
+    });
+    const result = parser.parse(xmlText);
 
-    const articleElements = doc.querySelectorAll("PubmedArticle");
+    // Get article array
+    let articleArray = result.PubmedArticleSet?.PubmedArticle || [];
+    if (!Array.isArray(articleArray)) {
+      articleArray = [articleArray];
+    }
 
-    articleElements.forEach(articleElem => {
+    for (const article of articleArray) {
       try {
-        // PMID (Bug #1: null safety)
-        const pmidElem = articleElem.querySelector("PMID");
-        const pmid = pmidElem?.textContent ?? "";
+        const medlineCitation = article.MedlineCitation || {};
+        const pubmedData = article.PubmedData || {};
 
-        // Title (Bug #1: null safety)
-        const titleElem = articleElem.querySelector("ArticleTitle");
-        const title = titleElem?.textContent ?? "";
+        // PMID
+        const pmid = String(medlineCitation.PMID || "");
 
-        // Authors (Bug #3: handle missing forename)
+        // Title
+        const articleData = medlineCitation.Article || {};
+        const title = String(articleData.ArticleTitle || "");
+
+        // Authors
         const authors: string[] = [];
-        const authorElements = articleElem.querySelectorAll("Author");
-        authorElements.forEach(author => {
-          const lastname = author.querySelector("LastName")?.textContent;
-          const forename = author.querySelector("ForeName")?.textContent;
+        const authorList = articleData.AuthorList?.Author || [];
+        const authorArray = Array.isArray(authorList) ? authorList : [authorList];
+
+        for (const author of authorArray) {
+          const lastname = author.LastName;
+          const forename = author.ForeName;
 
           if (forename && lastname) {
             authors.push(`${forename} ${lastname}`);
           } else if (lastname) {
-            authors.push(lastname);
+            authors.push(String(lastname));
           }
-        });
+        }
 
-        // Journal (Bug #1: null safety)
-        const journalElem = articleElem.querySelector("Journal Title");
-        const journal = journalElem?.textContent ?? "";
+        // Journal
+        const journal = String(articleData.Journal?.Title || "");
 
-        // Publication date (Bug #4: handle missing month)
-        const yearElem = articleElem.querySelector("PubDate Year");
-        const monthElem = articleElem.querySelector("PubDate Month");
-        const year = yearElem?.textContent ?? "";
-        const month = monthElem?.textContent ?? "";
+        // Publication date
+        const pubDate = articleData.Journal?.JournalIssue?.PubDate || {};
+        const year = String(pubDate.Year || "");
+        const month = String(pubDate.Month || "");
         const pub_date = month ? `${year}-${month}` : year;
 
-        // Abstract (Bug #2: join with space)
+        // Abstract
+        const abstractData = articleData.Abstract?.AbstractText || [];
+        const abstractArray = Array.isArray(abstractData) ? abstractData : [abstractData];
         const abstractParts: string[] = [];
-        const abstractElements = articleElem.querySelectorAll("AbstractText");
-        abstractElements.forEach(elem => {
-          const text = elem.textContent;
-          if (text) abstractParts.push(text);
-        });
+
+        for (const part of abstractArray) {
+          if (typeof part === 'string') {
+            abstractParts.push(part);
+          } else if (part && part['#text']) {
+            abstractParts.push(String(part['#text']));
+          }
+        }
         const abstract = abstractParts.join(" ");
 
-        // DOI (Bug #1: null safety)
+        // DOI
         let doi = "";
-        const articleIdElements = articleElem.querySelectorAll("ArticleId");
-        articleIdElements.forEach(elem => {
-          if (elem.getAttribute("IdType") === "doi") {
-            doi = elem.textContent ?? "";
+        const articleIds = pubmedData.ArticleIdList?.ArticleId || [];
+        const articleIdArray = Array.isArray(articleIds) ? articleIds : [articleIds];
+
+        for (const id of articleIdArray) {
+          if (id['@_IdType'] === 'doi') {
+            doi = typeof id === 'string' ? id : String(id['#text'] || "");
+            break;
           }
-        });
+        }
 
         articles.push({
           pmid,
@@ -192,7 +224,7 @@ function parseEFetchXML(xmlText: string): Article[] {
       } catch (error) {
         console.error("Error parsing individual article:", error);
       }
-    });
+    }
 
     return articles;
   } catch (error) {
@@ -202,22 +234,47 @@ function parseEFetchXML(xmlText: string): Article[] {
 }
 
 /**
- * Parse ELink XML response for citation links
+ * Parse ELink XML response for citation links using fast-xml-parser
  * Bug fixes applied:
  * - #1: Null safety on element accesses
+ * - Fixed: Use fast-xml-parser (DOMParser not available in Cloudflare Workers)
  */
 function parseELinkXML(xmlText: string): string[] {
   try {
-    const parser = new DOMParser();
-    const doc = parser.parseFromString(xmlText, "text/xml");
+    const parser = new XMLParser({
+      ignoreAttributes: true,
+      parseTagValue: true,
+      isArray: (tagName) => ['Link'].includes(tagName)
+    });
+    const result = parser.parse(xmlText);
 
     const citingPmids: string[] = [];
-    const linkIdElements = doc.querySelectorAll("Link Id");
 
-    linkIdElements.forEach(elem => {
-      const text = elem.textContent;
-      if (text) citingPmids.push(text);
-    });
+    // Navigate to LinkSet
+    const linkSetList = result.eLinkResult?.LinkSet;
+    if (!linkSetList) return [];
+
+    const linkSets = Array.isArray(linkSetList) ? linkSetList : [linkSetList];
+
+    for (const linkSet of linkSets) {
+      const linkSetDb = linkSet.LinkSetDb;
+      if (!linkSetDb) continue;
+
+      const linkSetDbArray = Array.isArray(linkSetDb) ? linkSetDb : [linkSetDb];
+
+      for (const db of linkSetDbArray) {
+        const links = db.Link;
+        if (!links) continue;
+
+        const linkArray = Array.isArray(links) ? links : [links];
+
+        for (const link of linkArray) {
+          if (link.Id) {
+            citingPmids.push(String(link.Id));
+          }
+        }
+      }
+    }
 
     return citingPmids;
   } catch (error) {
